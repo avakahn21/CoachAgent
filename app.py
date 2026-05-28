@@ -183,10 +183,8 @@ def plaid_callback():
     if user_number:
         _send_whatsapp(
             user_number,
-            "Your bank account is connected! I'll pull transactions daily and track them "
-            "against your budget automatically. Manual logging still works too.\n\n"
-            "Sandbox test note: use username *user_good* / password *pass_good* at "
-            "First Platypus Bank to add test transactions."
+            "Your bank account is connected! I'll pull transactions daily and categorize them "
+            "against your budget automatically. Manual logging still works too."
         )
 
     # Kick off an immediate sync

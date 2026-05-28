@@ -91,10 +91,6 @@ def _handle_connect_plaid(text: str) -> str | None:
         link_url = f"{base_url}/plaid/link/{link_token}"
         return (
             f"Open this link on your phone to connect your bank account:\n\n{link_url}\n\n"
-            f"Sandbox test credentials:\n"
-            f"  Bank: First Platypus Bank\n"
-            f"  Username: user_good\n"
-            f"  Password: pass_good\n\n"
             f"Once connected, I'll pull and categorize your transactions automatically every day."
         )
     except Exception as e:
