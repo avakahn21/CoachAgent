@@ -121,9 +121,7 @@ def fetch_transactions(days: int = 7) -> list[dict]:
 
 def sync_and_log_transactions(days: int = 2) -> tuple[int, list[str], list[dict]]:
     """
-    Pull recent transactions, score confidence, log all of them.
-    High-confidence → log silently, save merchant mapping.
-    Low-confidence → log under best guess, add to clarification list.
+    Pull recent transactions, apply merchant mapping rules, log eligible ones.
     Returns (new_count, alert_messages, needs_clarification).
     """
     import categorization
@@ -138,25 +136,49 @@ def sync_and_log_transactions(days: int = 2) -> tuple[int, list[str], list[dict]
         print(f"Plaid sync error: {e}")
         return 0, [], []
 
+    # Load all mappings once for the whole sync batch
+    all_mappings = database.get_all_merchant_mappings()
+
     new_count = 0
     alerts = []
     needs_clarification = []
 
     for t in transactions:
         txn_id = t["transaction_id"]
+        amount = t["amount"]
+        name = t["name"]
+
         if database.is_transaction_logged(txn_id):
             continue
 
-        normalized = categorization.normalize_merchant(t["name"])
-        memory_cat = database.get_merchant_mapping(normalized)
-        category, confidence = categorization.score_transaction(
-            t["name"], t["plaid_category"], t["amount"], memory_cat
-        )
+        normalized = categorization.normalize_merchant(name)
 
+        # ── Merchant mapping lookup (fuzzy) ─────────────────────────────
+        merchant_row = categorization.lookup_merchant(normalized, all_mappings)
+
+        # Large Apple Cash payments are always ignored (rent/transfers)
+        if categorization.detect_ambiguous_payment(name) == "Apple Cash" and amount > 500:
+            continue
+
+        # Explicit ignore rule
+        if merchant_row and merchant_row.get("ignore"):
+            continue
+
+        # ── Determine category ──────────────────────────────────────────
+        if merchant_row:
+            category = merchant_row["category"]
+            confidence = 95
+        else:
+            memory_cat = database.get_merchant_mapping(normalized)
+            category, confidence = categorization.score_transaction(
+                name, t["plaid_category"], amount, memory_cat
+            )
+
+        # ── Log the transaction ─────────────────────────────────────────
         database.log_spend(
-            amount=t["amount"],
+            amount=amount,
             category=category,
-            description=t["name"],
+            description=name,
             date=t["date"],
             source="plaid",
             external_id=txn_id,
@@ -164,13 +186,32 @@ def sync_and_log_transactions(days: int = 2) -> tuple[int, list[str], list[dict]
         database.set_last_plaid_transaction({**t, "logged_category": category})
         new_count += 1
 
+        # ── Flag-always or threshold alert ──────────────────────────────
+        if merchant_row and categorization.should_flag(merchant_row, amount):
+            note = merchant_row.get("note", "")
+            alerts.append(categorization.build_flag_alert(name, amount, category, note))
+            continue  # skip budget % alert for flagged transactions
+
+        # ── Ambiguous P2P payment — ask Ava ────────────────────────────
+        payment_type = categorization.detect_ambiguous_payment(name)
+        if payment_type and not merchant_row:
+            needs_clarification.append({
+                **t,
+                "suggested_category": category,
+                "confidence": confidence,
+                "clarification_type": "ambiguous",
+                "payment_type": payment_type,
+            })
+            continue
+
+        # ── Low-confidence → ask Ava ────────────────────────────────────
         if confidence < categorization.CONFIDENCE_THRESHOLD:
             needs_clarification.append({**t, "suggested_category": category, "confidence": confidence})
         else:
-            # Persist merchant memory for high-confidence hits
-            if not memory_cat:
+            # Persist merchant memory for high-confidence hits from keyword scoring
+            if not merchant_row:
                 database.set_merchant_mapping(normalized, category)
-            # Threshold alert
+            # Budget threshold alert
             budget = config.BUDGET_TARGETS.get(category, 0)
             if budget:
                 total = database.get_category_spend_this_month(category)
@@ -178,7 +219,7 @@ def sync_and_log_transactions(days: int = 2) -> tuple[int, list[str], list[dict]
                 if pct >= 75 and _dt.utcnow().day < 20:
                     alerts.append(
                         f"Alert: {category.replace('_', ' ').title()} hit {pct:.0f}% "
-                        f"(${total:.0f}/${budget}) after a ${t['amount']:.0f} charge at {t['name']}."
+                        f"(${total:.0f}/${budget}) after a ${amount:.0f} charge at {name}."
                     )
 
     return new_count, alerts, needs_clarification

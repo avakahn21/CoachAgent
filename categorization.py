@@ -1,9 +1,116 @@
 from __future__ import annotations
 """Smart transaction categorization — confidence scoring, merchant memory, clarification flow."""
 import re
+from datetime import date as _date
 from financial import CATEGORY_KEYWORDS, PLAID_CATEGORY_MAP, categorize
 
 CONFIDENCE_THRESHOLD = 65  # Below this → ask Ava for clarification
+
+_LMU_START = _date(2026, 8, 17)
+
+
+# ── Fuzzy merchant lookup ───────────────────────────────────────────────────
+
+def _to_words(s: str) -> set[str]:
+    """Lowercase, strip non-alphanumeric, return word set for fuzzy matching."""
+    return set(re.sub(r"[^a-z0-9]", " ", s.lower()).split())
+
+
+def lookup_merchant(normalized_name: str, all_mappings: list[dict]) -> dict | None:
+    """
+    Find the most specific (most words matched) merchant mapping for a normalized name.
+    Pattern words must all appear in the target word set.
+    """
+    target_words = _to_words(normalized_name)
+    best: dict | None = None
+    best_len = 0
+    for m in all_mappings:
+        pattern = m.get("merchant_pattern", "")
+        if not pattern:
+            continue
+        pattern_words = _to_words(pattern)
+        if pattern_words and pattern_words.issubset(target_words):
+            if len(pattern_words) > best_len:
+                best = m
+                best_len = len(pattern_words)
+    return best
+
+
+def should_flag(merchant_row: dict, amount: float) -> bool:
+    """Return True if this transaction should trigger an immediate alert."""
+    if merchant_row.get("flag_always"):
+        return True
+    threshold = merchant_row.get("flag_threshold") or 0
+    return bool(threshold and amount >= threshold)
+
+
+# ── Flag alert builder ──────────────────────────────────────────────────────
+
+def build_flag_alert(merchant_name: str, amount: float, category: str, note: str) -> str:
+    """Generate a direct, Ava-specific alert for a flagged transaction."""
+    import database
+    note_lower = (note or "").lower()
+    name_lower = merchant_name.lower()
+
+    if "delivery" in note_lower:
+        return f"{merchant_name} — ${amount:.0f}. You said no delivery. What happened?"
+
+    if "erewhon" in name_lower:
+        count = database.count_merchant_transactions_this_month("erewhon")
+        return f"Erewhon — ${amount:.0f}. That's visit #{count} this month."
+
+    if "equinox" in name_lower:
+        days = (_LMU_START - _date.today()).days
+        return f"Equinox charged ${amount:.0f} again. {days} days until law school. Cancel this."
+
+    if "should cancel" in note_lower or "cancel" in note_lower:
+        return f"{merchant_name} — ${amount:.0f}. {note}."
+
+    if "pet insurance" in note_lower or "wagmo" in name_lower:
+        days = (_LMU_START - _date.today()).days
+        return f"Wagmo pet insurance — ${amount:.0f}. {days} days until law school. Still keeping this?"
+
+    if "imdb" in name_lower:
+        return f"IMDbPro — ${amount:.0f}. Will you use this in law school? Reply 'cancel imdb' or 'keep imdb'."
+
+    if category == "shopping":
+        return f"{merchant_name} — ${amount:.0f}. Shopping charge — logged."
+
+    display = CATEGORY_DISPLAY.get(category, category.replace("_", " ").title())
+    suffix = f" ({note})" if note else ""
+    return f"{merchant_name} — ${amount:.0f} [{display}{suffix}]"
+
+
+# ── Ambiguous payment detection ─────────────────────────────────────────────
+
+_AMBIGUOUS_PATTERNS = [
+    (r"apple cash|pmnt sent", "Apple Cash"),
+    (r"\bvenmo\b", "Venmo"),
+    (r"\bzelle\b", "Zelle"),
+    (r"7eleven.fcti|atm withdrawal|atm fee", "ATM"),
+]
+
+
+def detect_ambiguous_payment(merchant_name: str) -> str | None:
+    """Return the payment type string if this looks like an ambiguous P2P/cash payment."""
+    n = merchant_name.lower()
+    for pattern, label in _AMBIGUOUS_PATTERNS:
+        if re.search(pattern, n):
+            return label
+    return None
+
+
+def build_ambiguous_message(merchant_name: str, amount: float, payment_type: str) -> str:
+    """Ask Ava what an unknown P2P payment was for."""
+    # Try to extract recipient name for Zelle/Venmo
+    recipient = ""
+    m = re.search(r"(?:zelle to|venmo to|sent to)\s+([a-z ]+)", merchant_name.lower())
+    if m:
+        recipient = m.group(1).strip().title()
+
+    if recipient:
+        return f"You sent ${amount:.0f} via {payment_type} to {recipient}. What was this for?"
+    return f"You sent ${amount:.0f} via {payment_type}. What was this for?"
 
 # ── Merchant name normalization ─────────────────────────────────────────────
 
@@ -148,6 +255,12 @@ def build_clarification_message(txn: dict, suggested: str) -> str:
     amount = txn["amount"]
     name = txn["name"]
     date = txn.get("date", "recently")
+
+    # Ambiguous P2P payment — different prompt
+    if txn.get("clarification_type") == "ambiguous":
+        payment_type = txn.get("payment_type", "payment")
+        return build_ambiguous_message(name, amount, payment_type)
+
     display = CATEGORY_DISPLAY.get(suggested, suggested.replace("_", " ").title())
     reason = _reason_phrase(name, suggested, amount)
     others = ", ".join(_OTHER_LIKELY.get(suggested, ["Shopping", "Dining"])[:2])

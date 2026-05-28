@@ -188,6 +188,13 @@ def get_merchant_mapping(normalized_name: str) -> str | None:
     return res.data[0]["category"] if res.data else None
 
 
+def get_all_merchant_mappings() -> list[dict]:
+    """Return all rows from merchant_mappings for fuzzy matching."""
+    db = get_client()
+    res = db.table("merchant_mappings").select("*").execute()
+    return res.data or []
+
+
 def set_merchant_mapping(normalized_name: str, category: str):
     db = get_client()
     now = datetime.utcnow().isoformat()
@@ -208,6 +215,46 @@ def set_merchant_mapping(normalized_name: str, category: str):
             "first_seen": now,
             "updated_at": now,
         }).execute()
+
+
+def upsert_merchant_mapping(
+    pattern: str,
+    category: str,
+    ignore: bool = False,
+    flag_always: bool = False,
+    flag_threshold: float = 0,
+    note: str = "",
+):
+    """Insert or update a full merchant mapping row (used by seeder and user corrections)."""
+    db = get_client()
+    now = datetime.utcnow().isoformat()
+    existing = (
+        db.table("merchant_mappings")
+        .select("id")
+        .eq("merchant_pattern", pattern)
+        .execute()
+    )
+    payload = {
+        "merchant_pattern": pattern,
+        "category": category,
+        "ignore": ignore,
+        "flag_always": flag_always,
+        "flag_threshold": flag_threshold,
+        "note": note,
+        "updated_at": now,
+    }
+    if existing.data:
+        db.table("merchant_mappings").update(payload).eq("merchant_pattern", pattern).execute()
+    else:
+        payload["first_seen"] = now
+        db.table("merchant_mappings").insert(payload).execute()
+
+
+def count_merchant_transactions_this_month(description_pattern: str) -> int:
+    """Count how many times a merchant appears in this month's spending logs."""
+    now = datetime.utcnow()
+    rows = get_monthly_spend(now.year, now.month)
+    return sum(1 for r in rows if description_pattern.lower() in r.get("description", "").lower())
 
 
 # ── Clarification queue ─────────────────────────────────────────────────────
