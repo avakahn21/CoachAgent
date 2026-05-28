@@ -81,6 +81,68 @@ def build_flag_alert(merchant_name: str, amount: float, category: str, note: str
     return f"{merchant_name} — ${amount:.0f} [{display}{suffix}]"
 
 
+# ── Amount-sensitive merchant logic (Apple, Prime Video) ────────────────────
+
+# Recurring subscription amounts we recognize silently — anything else gets asked
+APPLE_SUBSCRIPTION_AMOUNTS: frozenset[float] = frozenset({
+    4.99, 6.99, 9.99, 12.99, 13.99, 14.99, 19.99, 32.98,
+})
+PRIME_SUBSCRIPTION_AMOUNTS: frozenset[float] = frozenset({
+    8.99, 14.99, 17.99,
+})
+
+
+def _is_apple_merchant(normalized_name: str) -> bool:
+    words = _to_words(normalized_name)
+    return "apple" in words and ("com" in words or "bill" in words)
+
+
+def _is_prime_video_merchant(normalized_name: str) -> bool:
+    words = _to_words(normalized_name)
+    return "prime" in words and "video" in words
+
+
+def lookup_amount_specific_merchant(normalized_name: str, amount: float) -> str | None:
+    """
+    For Apple and Prime Video charges, determine category by amount.
+    Returns a category string, "ask" (send clarification), or None (not applicable).
+    Checks DB first so user answers are remembered for future charges.
+    """
+    import database as _db
+
+    if _is_apple_merchant(normalized_name):
+        key = f"apple {amount:.2f}"
+        saved = _db.get_merchant_mapping(key)
+        if saved:
+            return saved
+        if round(amount, 2) in APPLE_SUBSCRIPTION_AMOUNTS:
+            return "subscriptions"
+        return "ask"
+
+    if _is_prime_video_merchant(normalized_name):
+        key = f"prime {amount:.2f}"
+        saved = _db.get_merchant_mapping(key)
+        if saved:
+            return saved
+        if round(amount, 2) in PRIME_SUBSCRIPTION_AMOUNTS:
+            return "subscriptions"
+        return "ask"
+
+    return None
+
+
+def get_amount_mapping_key(txn: dict) -> str:
+    """Return the merchant_mappings key used to save a user's answer for an amount-specific charge."""
+    name = txn.get("name", "")
+    amount = txn.get("amount", 0)
+    normalized = normalize_merchant(name)
+    if _is_apple_merchant(normalized):
+        return f"apple {amount:.2f}"
+    if _is_prime_video_merchant(normalized):
+        return f"prime {amount:.2f}"
+    return normalized
+
+
 # ── Ambiguous payment detection ─────────────────────────────────────────────
 
 _AMBIGUOUS_PATTERNS = [
@@ -256,8 +318,15 @@ def build_clarification_message(txn: dict, suggested: str) -> str:
     name = txn["name"]
     date = txn.get("date", "recently")
 
+    # Apple / Prime Video amount-specific prompt
+    ctype = txn.get("clarification_type", "")
+    if ctype == "apple_amount":
+        return f"Apple charge ${amount:.2f} — movie/TV rental or subscription?"
+    if ctype == "prime_amount":
+        return f"Prime Video charge ${amount:.2f} — rental/purchase or subscription?"
+
     # Ambiguous P2P payment — different prompt
-    if txn.get("clarification_type") == "ambiguous":
+    if ctype == "ambiguous":
         payment_type = txn.get("payment_type", "payment")
         return build_ambiguous_message(name, amount, payment_type)
 

@@ -123,15 +123,27 @@ def _handle_clarification_reply(text: str) -> str | None:
         msg = f"Got it — ignored the ${amount:.0f} charge from {name}."
     else:
         database.recategorize_transaction(external_id, category)
-        database.set_merchant_mapping(normalized, category)
+        # For Apple/Prime amount-sensitive charges, key the memory by amount
+        # so next time the same dollar amount is auto-categorized correctly.
+        ctype = txn.get("clarification_type", "")
+        if ctype in ("apple_amount", "prime_amount"):
+            mapping_key = categorization.get_amount_mapping_key(txn)
+        else:
+            mapping_key = normalized
+        database.set_merchant_mapping(mapping_key, category)
         display = categorization.CATEGORY_DISPLAY.get(category, category)
         budget = config.BUDGET_TARGETS.get(category, 0)
         total = database.get_category_spend_this_month(category)
         pct = (total / budget * 100) if budget else 0
+        memory_note = f"I'll remember ${amount:.2f} Apple charges as {display} from now on." \
+            if ctype == "apple_amount" else \
+            f"I'll remember ${amount:.2f} Prime Video charges as {display} from now on." \
+            if ctype == "prime_amount" else \
+            f"I'll remember this merchant as {display} from now on."
         msg = (
             f"Got it — logged ${amount:.0f} at {name} as {display}. "
             f"Running total: ${total:.0f} / ${budget} ({pct:.0f}%).\n"
-            f"I'll remember this merchant as {display} from now on."
+            f"{memory_note}"
         )
 
     # Clear current and advance queue

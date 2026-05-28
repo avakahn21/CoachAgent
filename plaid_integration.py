@@ -206,11 +206,35 @@ def sync_and_log_transactions(
 
             normalized = categorization.normalize_merchant(name)
 
-            merchant_row = categorization.lookup_merchant(normalized, all_mappings)
-
             # Large Apple Cash payments are always ignored (rent/transfers)
             if categorization.detect_ambiguous_payment(name) == "Apple Cash" and amount > 500:
                 continue
+
+            # ── Amount-sensitive merchants (Apple, Prime Video) ─────────────
+            amount_result = categorization.lookup_amount_specific_merchant(normalized, amount)
+            if amount_result == "ask":
+                # Don't log yet — ask Ava first
+                ctype = "apple_amount" if "apple" in normalized else "prime_amount"
+                needs_clarification.append({
+                    **t,
+                    "suggested_category": "subscriptions",
+                    "confidence": 0,
+                    "clarification_type": ctype,
+                })
+                continue
+            if amount_result is not None:
+                # Known subscription amount — log silently
+                category, confidence = amount_result, 95
+                database.log_spend(
+                    amount=amount, category=category, description=name,
+                    date=t["date"], source="plaid", external_id=txn_id,
+                )
+                database.set_last_plaid_transaction({**t, "logged_category": category})
+                new_count += 1
+                continue
+
+            # ── Generic merchant lookup ─────────────────────────────────────
+            merchant_row = categorization.lookup_merchant(normalized, all_mappings)
 
             # Explicit ignore rule
             if merchant_row and merchant_row.get("ignore"):
