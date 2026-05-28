@@ -184,5 +184,48 @@ def sync_and_log_transactions(days: int = 2) -> tuple[int, list[str], list[dict]
     return new_count, alerts, needs_clarification
 
 
+def get_connected_accounts() -> list[dict]:
+    """Return [{institution_name, accounts: [{name, mask}]}] for all stored tokens."""
+    from plaid.model.accounts_get_request import AccountsGetRequest
+    from plaid.model.item_get_request import ItemGetRequest
+    from plaid.model.institutions_get_by_id_request import InstitutionsGetByIdRequest
+    from plaid.model.country_code import CountryCode
+
+    access_token = get_access_token()
+    if not access_token:
+        return []
+
+    client = _client()
+
+    item_resp = client.item_get(ItemGetRequest(access_token=access_token))
+    institution_id = item_resp["item"]["institution_id"]
+
+    inst_resp = client.institutions_get_by_id(
+        InstitutionsGetByIdRequest(
+            institution_id=institution_id,
+            country_codes=[CountryCode("US")],
+        )
+    )
+    institution_name = inst_resp["institution"]["name"]
+
+    accts_resp = client.accounts_get(AccountsGetRequest(access_token=access_token))
+    accounts = [
+        {"name": a["name"], "mask": a.get("mask") or "????"}
+        for a in accts_resp["accounts"]
+    ]
+
+    return [{"institution_name": institution_name, "accounts": accounts}]
+
+
+def format_connected_accounts(institutions: list[dict]) -> str:
+    if not institutions:
+        return "No accounts connected yet — text 'connect Plaid' to add one."
+    lines = ["Connected accounts:"]
+    for inst in institutions:
+        parts = [f"{a['name']} (...{a['mask']})" for a in inst["accounts"]]
+        lines.append(f"{inst['institution_name']} — {', '.join(parts)}")
+    return "\n".join(lines)
+
+
 def is_connected() -> bool:
     return PLAID_AVAILABLE and has_connected_account()

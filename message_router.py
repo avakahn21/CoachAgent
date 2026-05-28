@@ -176,6 +176,26 @@ def _handle_correction(text: str) -> str | None:
     )
 
 
+_ACCOUNTS_PHRASES = [
+    "my accounts", "what accounts are connected", "connected accounts",
+    "which accounts", "what banks", "show accounts",
+]
+
+
+def _handle_accounts_query(text: str) -> str | None:
+    if not any(p in text.lower() for p in _ACCOUNTS_PHRASES):
+        return None
+    import plaid_integration
+    if not plaid_integration.PLAID_AVAILABLE:
+        return "Plaid isn't configured — add PLAID_CLIENT_ID and PLAID_SECRET to get started."
+    try:
+        institutions = plaid_integration.get_connected_accounts()
+        return plaid_integration.format_connected_accounts(institutions)
+    except Exception as e:
+        print(f"Accounts query error: {e}")
+        return "Couldn't fetch account info right now. Try again in a moment."
+
+
 _REPORT_PHRASES = [
     "send my report", "monthly report", "how did i do this month",
     "spending report", "send report", "get my report", "show my report",
@@ -243,6 +263,12 @@ def route_message(text: str) -> str:
     if plaid_response:
         database.save_message("assistant", plaid_response, mode="financial")
         return plaid_response
+
+    # Accounts query — intercept before mode detection
+    accounts_response = _handle_accounts_query(text)
+    if accounts_response:
+        database.save_message("assistant", accounts_response, mode="financial")
+        return accounts_response
 
     # Monthly PDF report request — intercept before mode detection
     report_response = _handle_report_request(text)
