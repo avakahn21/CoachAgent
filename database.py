@@ -212,7 +212,6 @@ def set_merchant_mapping(normalized_name: str, category: str):
         db.table("merchant_mappings").insert({
             "merchant_pattern": normalized_name,
             "category": category,
-            "first_seen": now,
             "updated_at": now,
         }).execute()
 
@@ -246,7 +245,6 @@ def upsert_merchant_mapping(
     if existing.data:
         db.table("merchant_mappings").update(payload).eq("merchant_pattern", pattern).execute()
     else:
-        payload["first_seen"] = now
         db.table("merchant_mappings").insert(payload).execute()
 
 
