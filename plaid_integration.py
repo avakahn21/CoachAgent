@@ -1,6 +1,6 @@
 from __future__ import annotations
 """Plaid integration — Link flow, token exchange, daily transaction sync."""
-from datetime import date, timedelta
+from datetime import date
 import config
 import database
 
@@ -99,19 +99,23 @@ def exchange_and_store(public_token: str) -> tuple[str, str]:
 
 # ── Transaction fetching ────────────────────────────────────────────────────
 
-def _fetch_transactions_for_token(access_token: str, days: int) -> list[dict]:
-    """Fetch transactions for a single access token."""
+def _fetch_transactions_for_token(
+    access_token: str,
+    start_date: str,
+    end_date: str,
+) -> list[dict]:
+    """Fetch transactions for a single access token between two ISO date strings."""
     from plaid.model.transactions_get_request import TransactionsGetRequest
     from plaid.model.transactions_get_request_options import TransactionsGetRequestOptions
 
-    end = date.today()
-    start = end - timedelta(days=days)
+    start = date.fromisoformat(start_date)
+    end   = date.fromisoformat(end_date)
 
     req = TransactionsGetRequest(
         access_token=access_token,
         start_date=start,
         end_date=end,
-        options=TransactionsGetRequestOptions(count=100),
+        options=TransactionsGetRequestOptions(count=500),
     )
     response = _client().transactions_get(req)
 
@@ -133,8 +137,12 @@ def _fetch_transactions_for_token(access_token: str, days: int) -> list[dict]:
     return results
 
 
-def fetch_transactions(days: int = 7) -> list[dict]:
+def fetch_transactions(start_date: str | None = None, end_date: str | None = None) -> list[dict]:
     """Fetch transactions from ALL connected institutions, combined."""
+    today = date.today()
+    start_date = start_date or today.replace(day=1).isoformat()
+    end_date   = end_date   or today.isoformat()
+
     tokens = database.get_all_plaid_tokens()
     if not tokens:
         return []
@@ -142,7 +150,7 @@ def fetch_transactions(days: int = 7) -> list[dict]:
     all_txns = []
     for row in tokens:
         try:
-            all_txns.extend(_fetch_transactions_for_token(row["access_token"], days))
+            all_txns.extend(_fetch_transactions_for_token(row["access_token"], start_date, end_date))
         except Exception as e:
             print(f"Plaid fetch error for {row.get('institution_name', row['item_id'])}: {e}")
     return all_txns
@@ -150,14 +158,22 @@ def fetch_transactions(days: int = 7) -> list[dict]:
 
 # ── Daily sync ──────────────────────────────────────────────────────────────
 
-def sync_and_log_transactions(days: int = 2) -> tuple[int, list[str], list[dict]]:
+def sync_and_log_transactions(
+    start_date: str | None = None,
+    end_date: str | None = None,
+    days: int | None = None,  # kept for backward compat with scheduler calls — ignored
+) -> tuple[int, list[str], list[dict]]:
     """
-    Pull recent transactions from all connected institutions, apply merchant mapping
-    rules, log eligible ones.
+    Pull transactions from all connected institutions for the current calendar month
+    (or an explicit start/end range), apply merchant mapping rules, log eligible ones.
     Returns (new_count, alert_messages, needs_clarification).
     """
     import categorization
     from datetime import datetime as _dt
+
+    today = date.today()
+    start_date = start_date or today.replace(day=1).isoformat()
+    end_date   = end_date   or today.isoformat()
 
     tokens = database.get_all_plaid_tokens()
     if not tokens:
@@ -173,7 +189,9 @@ def sync_and_log_transactions(days: int = 2) -> tuple[int, list[str], list[dict]
     for token_row in tokens:
         inst_name = token_row.get("institution_name") or token_row["item_id"]
         try:
-            transactions = _fetch_transactions_for_token(token_row["access_token"], days)
+            transactions = _fetch_transactions_for_token(
+                token_row["access_token"], start_date, end_date
+            )
         except Exception as e:
             print(f"Plaid sync error for {inst_name}: {e}")
             continue
@@ -285,6 +303,13 @@ def get_connected_accounts() -> list[dict]:
         except Exception as e:
             print(f"accounts_get error for {row.get('institution_name', row['item_id'])}: {e}")
     return result
+
+
+def backfill_transactions(start_date: str = "2026-01-01") -> tuple[int, list[str], list[dict]]:
+    """Pull all transactions from start_date through today and log any not yet stored."""
+    end_date = date.today().isoformat()
+    print(f"[BACKFILL] {start_date} → {end_date}")
+    return sync_and_log_transactions(start_date=start_date, end_date=end_date)
 
 
 def format_connected_accounts(institutions: list[dict]) -> str:

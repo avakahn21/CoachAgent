@@ -29,6 +29,25 @@ def reset():
     return {"status": "reset", "setup_sent_cleared": True}, 200
 
 
+@app.route("/backfill", methods=["GET"])
+def backfill():
+    from flask import jsonify, request as flask_request
+    start = flask_request.args.get("start", "2026-01-01")
+    try:
+        new_count, alerts, clarifications = plaid_integration.backfill_transactions(start_date=start)
+        return jsonify({
+            "status": "ok",
+            "start_date": start,
+            "end_date": __import__("datetime").date.today().isoformat(),
+            "new_transactions_logged": new_count,
+            "alerts": alerts,
+            "needs_clarification": len(clarifications),
+        })
+    except Exception as e:
+        import traceback
+        return jsonify({"status": "error", "error": str(e), "trace": traceback.format_exc()}), 500
+
+
 @app.route("/test-sheets", methods=["GET"])
 def test_sheets():
     from flask import jsonify
