@@ -216,6 +216,21 @@ def _handle_report_request(text: str) -> str | None:
     return report.trigger_report_async(year, month)
 
 
+_SPENDING_SUMMARY_PHRASES = [
+    "how am i doing", "how have i been doing", "how did i do",
+    "weekly check", "weekly report", "spending report", "spending summary",
+    "how much have i spent", "how much did i spend", "what did i spend",
+    "show my spending", "my spending", "budget update", "budget check",
+    "where am i", "where do i stand", "spending this month", "this month spending",
+    "weekly spending", "monthly spending", "how's my budget", "hows my budget",
+]
+
+
+def _is_spending_summary_query(text: str) -> bool:
+    t = text.lower()
+    return any(p in t for p in _SPENDING_SUMMARY_PHRASES)
+
+
 _COACHING_SIGNALS = [
     "stressed", "stress", "worried", "worry", "overwhelmed", "anxious", "anxiety",
     "nervous", "scared", "excited", "help me think", "what should i", "should i",
@@ -296,6 +311,11 @@ def route_message(text: str) -> str:
 
     # ── Financial mode ──────────────────────────────────────────────────────
     if mode == "financial":
+        # Spending summary queries — bypass Claude, return live DB data
+        if _is_spending_summary_query(text):
+            summary = financial.build_spending_summary()
+            database.save_message("assistant", summary, mode="financial")
+            return summary
         # Try manual spend parse first
         spend_response = financial.log_manual_spend(text)
         if spend_response:

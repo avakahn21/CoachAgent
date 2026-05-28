@@ -1,10 +1,18 @@
 from __future__ import annotations
 """Financial coaching logic — spend parsing, budget alerts, weekly/monthly reports."""
 import re
-from datetime import datetime
+import calendar
+from datetime import datetime, date
 import database
 import sheets
 import config
+
+
+def get_current_month_range() -> tuple[str, str]:
+    """Return (start_iso, end_iso) for the current calendar month."""
+    today = date.today()
+    start = today.replace(day=1)
+    return start.isoformat(), today.isoformat()
 
 # ── Manual spend parsing ────────────────────────────────────────────────────
 
@@ -128,59 +136,96 @@ def check_threshold_alerts() -> list[str]:
     return alerts
 
 
-# ── Weekly report ───────────────────────────────────────────────────────────
+# ── Spending summary (canonical format for all "how am I doing" responses) ───
 
-def build_weekly_report() -> str:
+_CAT_EMOJI = {
+    "shopping":     "🛍",
+    "dining":       "🍽",
+    "personal_care":"💄",
+    "gas":          "⛽",
+    "groceries":    "🛒",
+    "gym":          "🏋",
+    "subscriptions":"📱",
+    "entertainment":"🎬",
+    "uber_lyft":    "🚗",
+    "misc":         "📦",
+}
+
+_CAT_NAME = {
+    "shopping":     "Shopping",
+    "dining":       "Dining",
+    "personal_care":"Personal",
+    "gas":          "Gas",
+    "groceries":    "Groceries",
+    "gym":          "Gym",
+    "subscriptions":"Subscriptions",
+    "entertainment":"Entertainment",
+    "uber_lyft":    "Transport",
+    "misc":         "Misc",
+}
+
+
+def build_spending_summary() -> str:
+    """
+    Return a formatted spending snapshot for the current calendar month.
+    Used for all 'how am I doing', 'weekly check-in', and report responses.
+    Queries live DB data — never uses hardcoded averages.
+    """
+    today = date.today()
+    year, month, day = today.year, today.month, today.day
+    days_in_month = calendar.monthrange(year, month)[1]
+    month_name = today.strftime("%B")
+
     totals = database.get_all_category_totals_this_month()
-    now = datetime.utcnow()
-    lines = [f"Weekly spending snapshot — {now.strftime('%B %d')}:\n"]
+    total_spent = sum(totals.values())
 
-    worst_category = None
-    worst_pct = 0
+    lines = [f"{month_name} spending so far (day {day} of {days_in_month})", ""]
+
+    worst_cat = None
+    worst_pct = 0.0
 
     for category, budget in config.BUDGET_TARGETS.items():
-        spent = totals.get(category, 0)
+        spent = totals.get(category, 0.0)
         if spent == 0:
             continue
         pct = (spent / budget * 100) if budget else 0
-        bar = "🔴" if pct >= 100 else ("🟡" if pct >= 75 else "🟢")
-        lines.append(f"{bar} {category.replace('_', ' ').title()}: ${spent:.0f} / ${budget} ({pct:.0f}%)")
+        filled = min(10, round(pct / 10))
+        bar = "█" * filled + "░" * (10 - filled)
+
+        if pct > 100:
+            status = "over"
+        elif pct >= 80:
+            status = "on track"
+        else:
+            status = "good"
+
+        emoji = _CAT_EMOJI.get(category, "•")
+        name  = _CAT_NAME.get(category, category.replace("_", " ").title())
+        lines.append(f"{emoji} {name:<14} ${spent:>5.0f}  {bar}  {pct:>3.0f}% — {status}")
+
         if pct > worst_pct:
             worst_pct = pct
-            worst_category = category
+            worst_cat = category
 
-    if worst_category:
-        lines.append(f"\nBiggest overspend: {worst_category.replace('_', ' ').title()} at {worst_pct:.0f}%.")
-        lines.append(_get_category_suggestion(worst_category))
+    if not worst_cat:
+        lines.append("No spending logged yet this month.")
+        return "\n".join(lines)
+
+    lines.append("")
+    lines.append(f"Total: ${total_spent:,.0f} of ${config.MONTHLY_NET:,} budget")
+    lines.append(_get_category_suggestion(worst_cat) if worst_pct > 100 else
+                 f"{_CAT_NAME.get(worst_cat, worst_cat)} is your highest category at {worst_pct:.0f}% — keep an eye on it.")
 
     return "\n".join(lines)
+
+
+# Keep these names so scheduler calls still work
+def build_weekly_report() -> str:
+    return build_spending_summary()
 
 
 def build_monthly_report() -> str:
-    totals = database.get_all_category_totals_this_month()
-    now = datetime.utcnow()
-    total_spent = sum(totals.values())
-    lines = [f"Monthly review — {now.strftime('%B %Y')}:\n"]
-    lines.append(f"Total spent: ${total_spent:.0f} / ${config.MONTHLY_NET} net\n")
-
-    over = []
-    on_track = []
-    for category, budget in config.BUDGET_TARGETS.items():
-        spent = totals.get(category, 0)
-        pct = (spent / budget * 100) if budget else 0
-        if pct >= 90:
-            over.append(f"  ❌ {category.replace('_', ' ').title()}: ${spent:.0f} / ${budget}")
-        elif pct <= 60:
-            on_track.append(f"  ✅ {category.replace('_', ' ').title()}: ${spent:.0f} / ${budget}")
-
-    if on_track:
-        lines.append("Wins:\n" + "\n".join(on_track))
-    if over:
-        lines.append("\nFlags:\n" + "\n".join(over))
-
-    savings = config.MONTHLY_NET - total_spent
-    lines.append(f"\nSavings runway: ${max(savings, 0):.0f} remaining this month.")
-    return "\n".join(lines)
+    return build_spending_summary()
 
 
 def _get_category_suggestion(category: str) -> str:
