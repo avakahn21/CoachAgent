@@ -75,22 +75,20 @@ def detect_mode(text: str) -> str:
 
 def _handle_connect_plaid(text: str) -> str | None:
     """Return a Plaid Link URL message if the user asked to connect Plaid."""
-    if "connect plaid" not in text.lower():
+    t = text.lower()
+    if "connect plaid" not in t and "add account" not in t and "add bank" not in t:
         return None
     import plaid_integration
     if not plaid_integration.PLAID_AVAILABLE:
         return "Plaid isn't configured yet. Add PLAID_CLIENT_ID and PLAID_SECRET to your environment variables."
-    if plaid_integration.has_connected_account():
-        return (
-            "Your bank account is already connected. I pull transactions daily automatically.\n\n"
-            "To reconnect a different account, text \"reconnect Plaid\"."
-        )
     try:
         link_token = plaid_integration.create_link_token()
         base_url = config.APP_BASE_URL.rstrip("/")
         link_url = f"{base_url}/plaid/link/{link_token}"
+        already = plaid_integration.has_connected_account()
+        intro = "Open this link to add another bank or card:" if already else "Open this link on your phone to connect your bank account:"
         return (
-            f"Open this link on your phone to connect your bank account:\n\n{link_url}\n\n"
+            f"{intro}\n\n{link_url}\n\n"
             f"Once connected, I'll pull and categorize your transactions automatically every day."
         )
     except Exception as e:

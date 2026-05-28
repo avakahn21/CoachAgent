@@ -255,6 +255,40 @@ def count_merchant_transactions_this_month(description_pattern: str) -> int:
     return sum(1 for r in rows if description_pattern.lower() in r.get("description", "").lower())
 
 
+# ── Plaid multi-token storage ──────────────────────────────────────────────
+
+def store_plaid_token(
+    access_token: str,
+    item_id: str,
+    institution_name: str = "",
+    institution_id: str = "",
+):
+    """Upsert a Plaid access token row, keyed by item_id (one row per institution)."""
+    db = get_client()
+    db.table("plaid_tokens").upsert(
+        {
+            "access_token": access_token,
+            "item_id": item_id,
+            "institution_name": institution_name,
+            "institution_id": institution_id,
+            "connected_at": datetime.utcnow().isoformat(),
+        },
+        on_conflict="item_id",
+    ).execute()
+
+
+def get_all_plaid_tokens() -> list[dict]:
+    db = get_client()
+    res = db.table("plaid_tokens").select("*").order("connected_at").execute()
+    return res.data or []
+
+
+def has_any_plaid_token() -> bool:
+    db = get_client()
+    res = db.table("plaid_tokens").select("item_id").limit(1).execute()
+    return bool(res.data)
+
+
 # ── Clarification queue ─────────────────────────────────────────────────────
 
 def get_current_clarification() -> dict | None:
