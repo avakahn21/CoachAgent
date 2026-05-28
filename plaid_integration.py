@@ -308,8 +308,13 @@ def get_connected_accounts() -> list[dict]:
 def backfill_transactions(start_date: str = "2026-01-01") -> tuple[int, list[str], list[dict]]:
     """Pull all transactions from start_date through today and log any not yet stored."""
     end_date = date.today().isoformat()
-    print(f"[BACKFILL] {start_date} → {end_date}")
-    return sync_and_log_transactions(start_date=start_date, end_date=end_date)
+    tokens = database.get_all_plaid_tokens()
+    print(f"[BACKFILL] Fetching transactions from {start_date} to {end_date} across {len(tokens)} token(s)")
+    for i, row in enumerate(tokens):
+        print(f"[BACKFILL] Processing token {i + 1} of {len(tokens)}: {row.get('institution_name') or row['item_id']}")
+    new_count, alerts, clarifications = sync_and_log_transactions(start_date=start_date, end_date=end_date)
+    print(f"[BACKFILL] Done — logged {new_count} new transactions, {len(alerts)} alerts, {len(clarifications)} needing clarification")
+    return new_count, alerts, clarifications
 
 
 def format_connected_accounts(institutions: list[dict]) -> str:

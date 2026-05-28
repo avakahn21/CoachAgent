@@ -31,21 +31,20 @@ def reset():
 
 @app.route("/backfill", methods=["GET"])
 def backfill():
+    import threading
     from flask import jsonify, request as flask_request
     start = flask_request.args.get("start", "2026-01-01")
-    try:
-        new_count, alerts, clarifications = plaid_integration.backfill_transactions(start_date=start)
-        return jsonify({
-            "status": "ok",
-            "start_date": start,
-            "end_date": __import__("datetime").date.today().isoformat(),
-            "new_transactions_logged": new_count,
-            "alerts": alerts,
-            "needs_clarification": len(clarifications),
-        })
-    except Exception as e:
-        import traceback
-        return jsonify({"status": "error", "error": str(e), "trace": traceback.format_exc()}), 500
+
+    def run_backfill():
+        try:
+            plaid_integration.backfill_transactions(start_date=start)
+        except Exception as e:
+            print(f"[BACKFILL ERROR] {e}")
+
+    thread = threading.Thread(target=run_backfill)
+    thread.daemon = True
+    thread.start()
+    return jsonify({"status": "backfill started in background — check Railway logs for progress", "start_date": start})
 
 
 @app.route("/test-sheets", methods=["GET"])
